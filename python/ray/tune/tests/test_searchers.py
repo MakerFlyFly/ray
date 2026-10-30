@@ -324,6 +324,34 @@ class InvalidValuesTest(unittest.TestCase):
         self.assertCorrectExperimentOutput(out)
 
 
+def test_optuna_add_evaluated_trials_with_error():
+    from optuna.trial import TrialState
+
+    from ray.tune.experiment import Trial
+    from ray.tune.result import DONE
+    from ray.tune.search.optuna import OptunaSearch
+
+    completed = Trial("stub", config={"x": 1.0}, stub=True)
+    completed.set_status(Trial.TERMINATED)
+    completed.update_last_result({"metric": 0.0, DONE: True})
+    errored = Trial("stub", config={"x": 2.0}, stub=True)
+    errored.set_status(Trial.ERROR)
+    searcher = OptunaSearch(
+        space={"x": tune.uniform(0.0, 5.0)}, metric="metric", mode="max"
+    )
+
+    searcher.add_evaluated_trials([completed, errored], "metric")
+
+    trials = searcher._ot_study.trials
+    assert len(trials) == 2
+    assert trials[0].params == {"x": 1.0}
+    assert trials[0].state == TrialState.COMPLETE
+    assert trials[0].value == 0.0
+    assert trials[1].params == {"x": 2.0}
+    assert trials[1].state == TrialState.FAIL
+    assert trials[1].value is None
+
+
 class AddEvaluatedPointTest(unittest.TestCase):
     """
     Test add_evaluated_point method in searchers that support it.
