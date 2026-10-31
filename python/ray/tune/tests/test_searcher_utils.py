@@ -3,6 +3,7 @@ from unittest.mock import Mock, call
 
 import pytest
 
+from ray.tune.analysis import ExperimentAnalysis
 from ray.tune.experiment import Trial
 from ray.tune.result import DONE
 from ray.tune.search import BasicVariantGenerator, ConcurrencyLimiter, Searcher
@@ -393,6 +394,27 @@ def test_set_max_concurrency():
         ),
         (Trial.TERMINATED, {DONE: True}, None, True),
         (Trial.TERMINATED, {DONE: False}, None, True),
+        (Trial.PENDING, {}, None, True),
+        (Trial.RUNNING, {}, None, True),
+        (Trial.PAUSED, {}, None, True),
+        (
+            Trial.PENDING,
+            {"metric": 4.0},
+            {"value": 4.0, "error": False, "pruned": False},
+            True,
+        ),
+        (
+            Trial.RUNNING,
+            {"metric": 4.0},
+            {"value": 4.0, "error": False, "pruned": False},
+            True,
+        ),
+        (
+            Trial.PAUSED,
+            {"metric": 4.0},
+            {"value": 4.0, "error": False, "pruned": False},
+            True,
+        ),
     ],
     ids=[
         "error-no-metric",
@@ -401,6 +423,12 @@ def test_set_max_concurrency():
         "pruned",
         "complete-no-metric",
         "pruned-no-metric",
+        "pending-no-metric",
+        "running-no-metric",
+        "paused-no-metric",
+        "pending-metric",
+        "running-metric",
+        "paused-metric",
     ],
 )
 def test_add_evaluated_trials(
@@ -465,6 +493,54 @@ def test_add_evaluated_trials_mixed_results(error_first):
         else [completed_call, errored_call]
     )
     assert searcher.add_evaluated_point.call_args_list == expected_calls
+    assert not caught
+
+
+@pytest.mark.parametrize(
+    "container", [list, tuple, ExperimentAnalysis], ids=["list", "tuple", "analysis"]
+)
+@pytest.mark.parametrize("status", [Trial.PENDING, Trial.RUNNING, Trial.PAUSED])
+def test_add_evaluated_trials_skips_nonterminal_without_metric(
+    container, status, tmp_path
+):
+    first = Trial("stub", config={"x": 1.0}, stub=True)
+    first.set_status(Trial.TERMINATED)
+    first.update_last_result({"metric": 0.0, DONE: True})
+    unfinished = Trial("stub", config={"x": 2.0}, stub=True)
+    unfinished.set_status(status)
+    last = Trial("stub", config={"x": 3.0}, stub=True)
+    last.set_status(Trial.TERMINATED)
+    last.update_last_result({"metric": 3.0, DONE: True})
+    trials = [first, unfinished, last]
+    if container is ExperimentAnalysis:
+        trials = ExperimentAnalysis(
+            str(tmp_path / "experiment_state.json"), trials=trials
+        )
+    else:
+        trials = container(trials)
+    searcher = Searcher()
+    searcher.add_evaluated_point = Mock()
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        searcher.add_evaluated_trials(trials, "metric")
+
+    assert searcher.add_evaluated_point.call_args_list == [
+        call(
+            parameters={"x": 1.0},
+            value=0.0,
+            error=False,
+            pruned=False,
+            intermediate_values=None,
+        ),
+        call(
+            parameters={"x": 3.0},
+            value=3.0,
+            error=False,
+            pruned=False,
+            intermediate_values=None,
+        ),
+    ]
     assert not caught
 
 
